@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>gridforming · EMTSim.jl</title><script data-outdated-warner src="../../assets/warner.js"></script><link rel="canonical" href="https://hexaeder.github.io/EMTSim.jl/generated/gridforming/"/><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.044/juliamono.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.13.11/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">EMTSim.jl</a></span></div><form class="docs-search" action="../../search/"><input class="docs-search-query" id="documenter-search-query" name="q" type="text" placeholder="Search docs"/></form><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Examples</span><ul><li class="is-active"><a class="tocitem" href>gridforming</a></li><li><a class="tocitem" href="../slack_load/">slack_load</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Examples</a></li><li class="is-active"><a href>gridforming</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>gridforming</a></li></ul></nav><div class="docs-right"><a class="docs-edit-link" href="https://github.com/hexaeder/EMTSim.jl/blob/main/examples/gridforming.jl" title="Edit on GitHub"><span class="docs-icon fab"></span><span class="docs-label is-hidden-touch">Edit on GitHub</span></a><a class="docs-settings-button fas fa-cog" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-sidebar-button fa fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a></div></header><article class="content" id="documenter-page"><pre><code class="language- hljs">using EMTSim
+using BlockSystems
+using ModelingToolkit
+using NetworkDynamics
+using Graphs
+using OrdinaryDiffEq
+using DiffEqCallbacks
+using SteadyStateDiffEq
+using Plots
+using Unitful
+using LinearAlgebra
+
+function get_rfcA(sym)
+    @variables t x_d(t) x_q(t)
+    @parameters x_r(t) x_i(t) δ(t)
+    blk = IOBlock([x_d ~   x_r * cos(δ) + x_i * sin(δ),
+                   x_q ~ - x_r * sin(δ) + x_i * cos(δ)],
+                  [x_r, x_i, δ],
+                  [x_d, x_q],
+                  name=Symbol(&quot;rfcA_&quot;*String(sym)))
+    rename_vars(blk;
+                x_r = Symbol(String(sym)*&quot;_r&quot;),
+                x_i = Symbol(String(sym)*&quot;_i&quot;),
+                x_d = Symbol(String(sym)*&quot;_d&quot;),
+                x_q = Symbol(String(sym)*&quot;_q&quot;))
+end
+
+function get_rfcB(sym)
+    @variables t x_r(t) x_i(t)
+    @parameters x_d(t) x_q(t) δ(t)
+    blk = IOBlock([x_r ~ x_d * cos(δ) - x_q * sin(δ),
+                   x_i ~ x_d * sin(δ) + x_q * cos(δ)],
+                  [x_d, x_q, δ],
+                  [x_r, x_i],
+                  name=Symbol(&quot;rfcB_&quot;*String(sym)))
+    rename_vars(blk;
+                x_r = Symbol(String(sym)*&quot;_r&quot;),
+                x_i = Symbol(String(sym)*&quot;_i&quot;),
+                x_d = Symbol(String(sym)*&quot;_d&quot;),
+                x_q = Symbol(String(sym)*&quot;_q&quot;))
+end
+
+####
+#### LCL Filter
+####
+@variables t i_f_r(t) i_f_i(t) i_g_r(t) i_g_i(t) V_C_r(t) V_C_i(t)
+@parameters ω0 Rf Rg Lf Lg C V_I_r(t) V_I_i(t) V_g_r(t) V_g_i(t)
+dt = Differential(t)
+
+LCL = IOBlock([dt(i_f_r) ~ -Rf/Lf*i_f_r + ω0*i_f_i + 1/Lf*(-V_C_r + V_I_r),
+               dt(i_f_i) ~ -Rf/Lf*i_f_i - ω0*i_f_r + 1/Lf*(-V_C_i + V_I_i),
+               dt(i_g_r) ~ -Rg/Lg*i_g_r + ω0*i_g_i + 1/Lg*(V_C_r - V_g_r),
+               dt(i_g_i) ~ -Rg/Lg*i_g_i - ω0*i_g_r + 1/Lg*(V_C_i - V_g_i),
+               dt(V_C_r) ~ 1/C * (i_f_r - i_g_r) + ω0*V_C_i,
+               dt(V_C_i) ~ 1/C * (i_f_i - i_g_i) - ω0*V_C_r],
+              [V_g_r, V_g_i, V_I_r, V_I_i],
+              [i_f_r, i_f_i, i_g_r, i_g_i, V_C_r, V_C_i],
+              name = :LCL)
+
+####
+#### Current Controller
+####
+@variables t γ_d(t) γ_q(t) V_I_d(t) V_I_q(t)
+@parameters KP KI i_f_d(t) i_f_q(t) i_f_ref_d(t) i_f_ref_q(t) Lf
+dt = Differential(t)
+
+CC = IOBlock([dt(γ_d) ~ i_f_ref_d - i_f_d,
+              dt(γ_q) ~ i_f_ref_q - i_f_q,
+              V_I_d ~  Lf*ω0*i_f_q + KP*(i_f_ref_d - i_f_d) + KI*γ_d,
+              V_I_q ~ -Lf*ω0*i_f_d + KP*(i_f_ref_q - i_f_q) + KI*γ_q],
+             [i_f_d, i_f_q, i_f_ref_d, i_f_ref_q],
+             [V_I_d, V_I_q],
+             name=:CC)
+
+@variables t γ_d(t) γ_q(t) i_f_ref_d(t)  i_f_ref_q(t)
+@parameters KP KI F V_C_d(t) V_C_q(t) V_C_ref_d(t) V_C_ref_q(t) i_g_d(t) i_g_q(t) ω0 C
+dt = Differential(t)
+
+####
+#### Voltage Controller
+####
+VC = IOBlock([dt(γ_d) ~ V_C_ref_d - V_C_d,
+              dt(γ_q) ~ V_C_ref_q - V_C_q,
+              i_f_ref_d ~ F*i_g_d + C*ω0*V_C_q + KP*(V_C_ref_d - V_C_d) + KI*γ_d,
+              i_f_ref_q ~ F*i_g_q - C*ω0*V_C_d + KP*(V_C_ref_q - V_C_q) + KI*γ_q],
+             [i_g_d, i_g_q, V_C_d, V_C_q, V_C_ref_d, V_C_ref_q],
+             [i_f_ref_d, i_f_ref_q],
+             name=:VC)
+
+
+####
+#### RFC Blocks
+####
+rfc_i_f = get_rfcA(:i_f)
+rfc_i_g = get_rfcA(:i_g)
+rfc_V_C = get_rfcA(:V_C)
+rfc_V_I = get_rfcB(:V_I)
+
+####
+#### System Creation
+####
+system = IOSystem(:autocon,
+                  [LCL,CC, VC, rfc_i_f, rfc_i_g, rfc_V_C, rfc_V_I],
+                  outputs=[LCL.i_g_r, LCL.i_g_i],
+                  globalp=[:δ, :C, :ω0, :Rf, :Rg, :Lf, :Lg],
+                  name=:inv)
+
+sys = connect_system(system)
+sys = set_input(sys, :δ=&gt;0)</code></pre><p>sys = set<em>input(sys, :V</em>C<em>ref</em>d=&gt;1) sys = set<em>input(sys, :V</em>C<em>ref</em>q=&gt;0)</p><pre><code class="language- hljs">params = Dict(
+    :VC₊KI =&gt; 1,
+    :CC₊KI =&gt; 1,
+    :VC₊KP =&gt; 1,
+    :CC₊KP =&gt; 1,
+    :F =&gt; 1,
+    :Rf =&gt; 0.01,
+    :Rg =&gt; 0.01,
+    :Lf =&gt; 10e-6,
+    :Lg =&gt; 10e-6,
+    :C =&gt; 1e-6,
+    :ω0 =&gt; 2π*50,
+)
+
+sysp = set_p(sys, params) |&gt; simplify
+
+A, B, C, D = identify_lti(sysp)
+A = fixdiv(A)
+
+
+ss = StateSpace(A, B, Matrix(I,10,10), zeros(10,4))
+
+OG = gram(ss,:o)
+isposdef(OG)
+CG = gram(ss,:c)
+isposdef(CG)
+
+sysbt, G, T = baltrunc(ss)
+bodeplot(ss)
+
+pzmap(ss)
+
+eigen(A)
+
+
+sysclosed = set_input(sysp, :V_g_r=&gt;0.8)
+sysclosed = set_input(sysclosed, :V_g_i=&gt;0.0)
+
+f = ODEFunction(sysclosed)
+u0 = zeros(length(f.syms))
+prob = ODEProblem(f, u0, (0, 10.))
+sol = solve(prob, Rodas5())
+
+f.syms
+
+plot(sol, vars=[:i_g_r, :i_g_i])</code></pre><p>plot!(sol, vars=[:i<em>f</em>r, :i<em>f</em>i])</p><pre><code class="language- hljs">plot(sol, vars=[:V_C_r, :V_C_i])
+plot(sol, vars=[:V_C_r, :V_C_i])
+plot(sol, vars=[:CC₊γ_d, :CC₊γ_q])
+plot(sol, vars=[:VC₊γ_d, :VC₊γ_q])
+
+xlims!(0, 0.001)
+
+f.syms
+eigen(A)
+
+Ctrb = ctrb(A, B)
+rank(Ctrb)
+
+det(Ctrb)
+
+Obsv = obsv(A, I)
+rank(Obsv)
+Obsv
+
+rank(Obsv[1:10,:])
+svd(Obsv[1:10,:])
+
+svd(Ctrb)
+
+rank(Obsv)
+
+rank(Obsv)
+
+Matrix(I, 4, 4)</code></pre><hr/><p><em>This page was generated using <a href="https://github.com/fredrikekre/Literate.jl">Literate.jl</a>.</em></p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../">« Home</a><a class="docs-footer-nextpage" href="../slack_load/">slack_load »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.19 on <span class="colophon-date" title="Monday 5 September 2022 08:54">Monday 5 September 2022</span>. Using Julia version 1.8.0.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
