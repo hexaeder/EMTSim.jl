@@ -24,6 +24,7 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 [compat]
 BlockSystems = "0.4"
 CSV = "0.10"
+CairoMakie = "0.8"
 DataFrames = "1"
 DiffEqCallbacks = "2"
 Graphs = "1"
